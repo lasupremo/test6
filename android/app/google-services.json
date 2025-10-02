@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "388335348861",
+    "project_id": "rekindle-test-47da7",
+    "storage_bucket": "rekindle-test-47da7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:388335348861:android:66e842217b530444069514",
+        "android_client_info": {
+          "package_name": "com.example.rekindle"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDMHVoqFbJawCyNRxNo5HmRqTrcj1KuP9U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

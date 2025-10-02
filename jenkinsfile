@@ -1,0 +1,91 @@
+pipeline {
+    agent {
+        label 'windows'
+    }
+
+    environment {
+        // Credentials loaded directly from Jenkins
+        SUPABASE_URL = credentials('supabase-url')
+        SUPABASE_ANON_KEY = credentials('supabase-anon-key')
+        GEMINI_API_KEY = credentials('gemini-api-key')
+        
+        // Docker Hub configuration
+        DOCKER_CREDENTIALS_ID = 'dockerhub-creds'
+        DOCKER_HUB_REPO = 'meteornkr/cicd-test'
+
+        // Pub cache path
+        PUB_CACHE = 'D:\\Jenkins\\caches\\.pub-cache'
+    }
+
+    stages {
+        stage('Setup Environment') {
+            steps {
+                echo 'Creating .env file...'
+                // Write all environment variables to .env file in one step
+                bat """
+                    echo URL=%SUPABASE_URL% > .env
+                    echo ANON_KEY=%SUPABASE_ANON_KEY% >> .env
+                    echo GEMINI_API_KEY=%GEMINI_API_KEY% >> .env
+                """
+                echo '.env file created successfully.'
+            }
+        }
+
+        stage('Build and Test') {
+            // Running build and test in parallel can save time
+            parallel {
+                stage('Build APK') {
+                    when {
+                        expression { env.BRANCH_NAME == 'dev' || env.GIT_BRANCH == 'origin/dev' }
+                    }
+                    steps {
+                        echo 'Installing dependencies...'
+                        bat 'flutter pub get'
+                        
+                        echo 'Building the application...'
+                        bat 'flutter build apk'
+
+                        echo 'Archiving build artifacts...'
+                        archiveArtifacts artifacts: 'build/app/outputs/flutter-apk/app-release.apk', followSymlinks: false
+                    }
+                }
+
+                stage('Unit Test') {
+                    steps {
+                        echo 'Running unit tests...'
+                        bat 'flutter test'
+                    }
+                }
+            }
+        }
+
+        stage('Create and Push Docker Image') {
+            when {
+                expression { env.BRANCH_NAME == 'dev' || env.GIT_BRANCH == 'origin/dev' }
+            }
+            steps {
+                script {
+                    echo 'Building and pushing Docker image...'
+                    withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        bat "docker build -f dockerfile -t ${DOCKER_HUB_REPO}:${env.BUILD_NUMBER} ."
+                        bat "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
+                        bat "docker push ${DOCKER_HUB_REPO}:${env.BUILD_NUMBER}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline finished.'
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
