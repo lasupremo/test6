@@ -2,86 +2,100 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import '../models/assessment.dart';
 
 class GeminiService {
   final String? _apiKey = dotenv.env['GEMINI_API_KEY'];
-  final SupabaseClient _supabase = Supabase.instance.client;
+  late final GenerativeModel _model;
 
-  Future<List<Question>> generateFlashcardQuestions(
-      String notesContent, String topicId) async {
+  GeminiService() {
     if (_apiKey == null) {
       debugPrint("Gemini API key not found in .env file.");
       throw Exception("API key not found");
     }
+    _model = GenerativeModel(model: 'gemini-2.0-flash', apiKey: _apiKey);
+  }
 
-    final model =
-        GenerativeModel(model: 'gemini-2.0-flash', apiKey: _apiKey);
-    final prompt =
-        'Based on the following notes, create 5 multiple-choice questions suitable for flashcards. For each question, provide 4 options and indicate the correct answer. Format the output as a valid JSON array of objects, where each object has "question_text" (a string), "options" (an array of 4 strings), and "correct_answer" (a string matching one of the options):\n\n---\n\nNOTES:\n$notesContent';
+  /// Generates questions from note content with pre-checks and AI validation.
+  /// Returns a map with the AI's response or an error message.
+  Future<Map<String, dynamic>> generateQuestionsFromNote({
+    required String noteContent,
+    required BuildContext context,
+  }) async {
+    // 1. Client-Side Pre-Check for content length
+    const int minWordCount = 25;
+    if (noteContent.trim().split(RegExp(r'\s+')).length < minWordCount) {
+      _showErrorDialog(context, "More Content Needed",
+          "Please add more details to your note (at least $minWordCount words) to generate a meaningful assessment.");
+      return {'error': 'local_validation_failed'};
+    }
 
+    // 2. Prepare the intelligent AI Prompt
+    const int maxQuestions = 10;
+    final prompt = """
+    First, analyze the following text to determine if it contains clear, factual information suitable for creating educational questions.
+
+    Text: "$noteContent"
+
+    If the text is nonsensical, gibberish, too vague, or lacks sufficient substance to create at least one meaningful question, respond with ONLY the following JSON object:
+    {
+      "error": "insufficient_content"
+    }
+
+    If the text is suitable, generate a concise and descriptive title for an assessment based on it. Then, generate as many high-quality multiple-choice questions as the text can support, up to a maximum of $maxQuestions questions. Each question must have one correct answer and three plausible incorrect answers.
+
+    Format the output as a single valid JSON object with the following structure:
+    {
+      "title": "Your Generated Assessment Title",
+      "questions": [
+        {
+          "question_text": "...",
+          "options": [
+            {"text": "...", "is_correct": false},
+            {"text": "...", "is_correct": true},
+            {"text": "...", "is_correct": false},
+            {"text": "...", "is_correct": false}
+          ]
+        }
+      ]
+    }
+    """;
+
+    // 3. Call the API and handle the response
     try {
-      final response = await model.generateContent([Content.text(prompt)]);
+      final response = await _model.generateContent([Content.text(prompt)]);
       final cleanJsonString =
           response.text!.replaceAll('```json', '').replaceAll('```', '').trim();
-      final jsonResponse = json.decode(cleanJsonString);
+      final jsonResponse = jsonDecode(cleanJsonString);
 
-      final List<Question> questions = [];
-
-      for (final q in jsonResponse) {
-        final questionText = q['question_text'];
-        final correctAnswer = q['correct_answer'];
-        final options = (q['options'] as List<dynamic>);
-
-        // 1. Insert the question and get its new ID
-        final questionResponse = await _supabase.from('question').insert({
-          'question_text': questionText,
-          'question_type': 'multiple_choice',
-          'points': 1,
-          'topic_id': topicId,
-        }).select('id');
-
-        final questionId = questionResponse[0]['id'];
-
-        // 2. Prepare answer options with the new question_id
-        final List<Map<String, dynamic>> answerOptionsToInsert = [];
-        final List<AnswerOption> answerOptionsForModel = [];
-
-        for (int i = 0; i < options.length; i++) {
-          final optionText = options[i];
-          final isCorrect = optionText == correctAnswer;
-          
-          answerOptionsToInsert.add({
-            'question_id': questionId,
-            'option_text': optionText,
-            'is_correct': isCorrect,
-            'order_index': i,
-            'points': isCorrect ? 1 : 0,
-          });
-
-          answerOptionsForModel.add(AnswerOption(
-            optionText: optionText,
-            isCorrect: isCorrect,
-          ));
-        }
-        
-        // 3. Batch insert all answer options for this question
-        await _supabase.from('answer_option').insert(answerOptionsToInsert);
-
-        // 4. Add the complete question object to our return list
-        questions.add(Question(
-          id: questionId,
-          questionText: questionText,
-          options: answerOptionsForModel,
-          correctAnswer: correctAnswer,
-        ));
+      // 4. Check for AI-driven validation error
+      if (jsonResponse.containsKey('error') && jsonResponse['error'] == 'insufficient_content') {
+        _showErrorDialog(context, "Could Not Generate Assessment",
+            "We couldn't create an assessment from this note. Please try revising it for more clarity and factual detail.");
+        return jsonResponse;
       }
 
-      return questions;
+      return jsonResponse;
+
     } catch (e) {
-      debugPrint('Error during question generation or database insertion: $e');
-      return [];
+      _showErrorDialog(context, "An Error Occurred",
+          "Something went wrong while generating the assessment. Please try again later.");
+      return {'error': 'api_exception', 'details': e.toString()};
     }
+  }
+
+  void _showErrorDialog(BuildContext context, String title, String content) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -78,6 +78,51 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildDueCounter(BuildContext context, int dueCount) {
+    // Calculate the progress ring value (e.g., 25% for 4 items, capped at 100%)
+    // You can adjust the logic here based on what you want to represent.
+    // For this example, let's say a "full" ring is 10+ due items.
+    final double progressValue = (dueCount / 10).clamp(0.0, 1.0);
+
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        SizedBox(
+          width: 80,
+          height: 80,
+          child: CircularProgressIndicator(
+            value: progressValue,
+            strokeWidth: 8,
+            backgroundColor: const Color(0xFFFAB906),
+            valueColor: const AlwaysStoppedAnimation<Color>(
+              Color(0xFFE56316),
+            ),
+          ),
+        ),
+        Column(
+          children: [
+            Text(
+              dueCount.toString(),
+              style: GoogleFonts.inter(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.inversePrimary,
+              ),
+            ),
+            Text(
+              'due',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: const Color(0xFF808080),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final supabase = Supabase.instance.client;
@@ -156,71 +201,56 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     // Due assessments card
                     Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Due assessments',
-                              style: GoogleFonts.inter(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).colorScheme.inversePrimary,
+                      child: GestureDetector( // 1. Wraps the card to make it tappable
+                        onTap: () => context.go('/home/due-assessments'), // 2. Navigates on tap
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primary,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
                               ),
-                            ),
-                            const SizedBox(height: 16),
-                            Center(
-                              child: Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  SizedBox(
-                                    width: 80,
-                                    height: 80,
-                                    child: CircularProgressIndicator(
-                                      value: 0.25,
-                                      strokeWidth: 8,
-                                      backgroundColor: const Color(0xFFFAB906),
-                                      valueColor: const AlwaysStoppedAnimation<Color>(
-                                        Color(0xFFE56316),
-                                      ),
-                                    ),
-                                  ),
-                                  Column(
-                                    children: [
-                                      Text(
-                                        '4',
-                                        style: GoogleFonts.inter(
-                                          fontSize: 32,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(context).colorScheme.inversePrimary,
-                                        ),
-                                      ),
-                                      Text(
-                                        'due',
-                                        style: GoogleFonts.inter(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500,
-                                          color: Color(0xFF808080),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Due assessments',
+                                style: GoogleFonts.inter(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Theme.of(context).colorScheme.inversePrimary,
+                                ),
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 16),
+                              Center(
+                                // 3. FutureBuilder to fetch and display the due count dynamically
+                                child: FutureBuilder<int>(
+                                  future: context.read<TopicDatabase>().countDueAssessments(),
+                                  builder: (context, snapshot) {
+                                    if (snapshot.connectionState == ConnectionState.waiting) {
+                                      return const SizedBox(
+                                        width: 80,
+                                        height: 80,
+                                        child: Center(child: CircularProgressIndicator(strokeWidth: 8)),
+                                      );
+                                    }
+                                    if (snapshot.hasError || !snapshot.hasData) {
+                                      // Display 0 or an error icon if fetching fails
+                                      return _buildDueCounter(context, 0);
+                                    }
+                                    // Display the fetched count
+                                    return _buildDueCounter(context, snapshot.data!);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

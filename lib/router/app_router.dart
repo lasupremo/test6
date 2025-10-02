@@ -6,6 +6,7 @@ import 'package:rekindle/pages/auth/register_page.dart';
 import 'package:rekindle/pages/auth/reset_password_page.dart';
 import 'package:rekindle/pages/home/home_page.dart';
 import 'package:rekindle/pages/topics_page.dart';
+import 'package:rekindle/pages/due_assessments_page.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: '/', // start here
@@ -52,6 +53,12 @@ final GoRouter appRouter = GoRouter(
           },
         ),
       ]
+    ),
+
+    // DUE ASSESSMENTS
+    GoRoute(
+      path: 'due-assessments',
+      builder: (context, state) => const DueAssessmentsPage(),
     ),
   ],
 );

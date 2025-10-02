@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/card_review.dart';
@@ -33,7 +34,6 @@ class FsrsService {
       card = await fsrs.Card.create();
     }
 
-    // *** THIS IS THE FIX: Capture the "before" state ***
     final previousState = card.state;
     final previousStability = card.stability;
     final previousDifficulty = card.difficulty;
@@ -41,7 +41,6 @@ class FsrsService {
     final result = _scheduler.reviewCard(card, rating);
     final newReview = CardReview.fromCard(result.card, profileId, questionId);
 
-    // Save or update the card review
     String cardReviewId;
     if (existingReview != null) {
       final updatedRows = await _supabase
@@ -55,8 +54,7 @@ class FsrsService {
           await _supabase.from('card_reviews').insert(newReview.toJson()).select();
       cardReviewId = insertedRows[0]['id'];
     }
-    
-    // *** THIS IS THE FIX: Create and insert the review log ***
+
     final log = ReviewLog(
       cardId: cardReviewId,
       profileId: profileId,
@@ -69,7 +67,7 @@ class FsrsService {
       previousState: previousState,
       newState: newReview.state,
     );
-    
+
     await _supabase.from('review_logs').insert(log.toJson());
   }
 
@@ -83,5 +81,24 @@ class FsrsService {
     return (response as List)
         .map((json) => CardReview.fromJson(json))
         .toList();
+  }
+
+  /// **Calculates the probability of recalling a card (retention score).**
+  ///
+  /// [lastReview]: The timestamp of the last time the user reviewed this card.
+  /// [stability]: The memory stability value ('S') from the FSRS algorithm for the card.
+  /// Returns a double between 0.0 (0%) and 1.0 (100%).
+  double calculateRetrievability(DateTime lastReview, double stability) {
+    // Calculate the time elapsed in days (can be a fraction).
+    final double elapsedDays =
+        DateTime.now().difference(lastReview).inMilliseconds / (1000 * 60 * 60 * 24);
+
+    // Guard against edge cases like future dates or zero stability.
+    if (elapsedDays < 0 || stability <= 0) {
+      return 1.0;
+    }
+
+    // The core FSRS formula for Retrievability: R = e^(-t/S)
+    return exp(-elapsedDays / stability);
   }
 }

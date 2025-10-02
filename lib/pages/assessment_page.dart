@@ -1,30 +1,27 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:rekindle/components/app_card.dart';
-import 'package:rekindle/components/answer_option_widget.dart';
-import 'package:rekindle/models/assessment.dart';
-import 'package:rekindle/services/gemini_service.dart';
-import 'package:rekindle/services/fsrs_service.dart';
-// import 'package:rekindle/services/mock_assessment_service.dart'; // Keep for testing
-import 'package:rekindle/theme/theme.dart';
-import '../models/topic.dart';
-import 'assessment_results_page.dart';
+import 'package:provider/provider.dart';
 import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:rekindle/components/app_card.dart';
+import 'package:rekindle/components/answer_option_widget.dart';
+import 'package:rekindle/models/assessment.dart';
+import 'package:rekindle/services/fsrs_service.dart';
+import 'package:rekindle/theme/theme.dart';
+import 'package:rekindle/models/topic_database.dart';
+import 'assessment_results_page.dart';
+
 class AssessmentPage extends StatefulWidget {
-  final Topic topic;
-  const AssessmentPage({super.key, required this.topic});
+  final String assessmentId;
+  const AssessmentPage({super.key, required this.assessmentId});
 
   @override
   State<AssessmentPage> createState() => _AssessmentPageState();
 }
 
 class _AssessmentPageState extends State<AssessmentPage> {
-  // --- STATE & LOGIC ---
   final FsrsService _fsrsService = FsrsService();
-  final GeminiService _assessmentService = GeminiService();
-  // final MockAssessmentService _assessmentService = MockAssessmentService(); // MOCK SERVICE
 
   List<Question> _questions = [];
   bool _isLoading = true;
@@ -35,100 +32,58 @@ class _AssessmentPageState extends State<AssessmentPage> {
   int? _selectedDifficultyIndex;
   bool _isDifficultyLocked = false;
   bool _isCorrectAnswer = false;
-  String? _assessmentId;
   String? _attemptId;
   String? _profileId;
 
   @override
   void initState() {
     super.initState();
-    _generateAssessment();
+    _loadAssessmentAndStartAttempt();
   }
 
-  void _generateAssessment() async {
-    setState(() {
-      _isLoading = true;
-      _score = 0;
-      _currentIndex = 0;
-      _answered = false;
-      _selectedOptionIndex = null;
-      _selectedDifficultyIndex = null;
-      _isDifficultyLocked = false;
-      _questions = [];
-      _isCorrectAnswer = false;
-    });
-
-    try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) return;
-
-      _profileId = user.id;
-
-      final assessmentResponse =
-          await Supabase.instance.client.from('assessment').insert({
-        'topic_id': widget.topic.id,
-        'profile_id': _profileId,
-        'status': 'in_progress'
-      }).select();
-      _assessmentId = assessmentResponse[0]['id'];
-
-      final attemptResponse =
-          await Supabase.instance.client.from('user_attempt').insert({
-        'profile_id': _profileId,
-        'assessment_id': _assessmentId,
-        'attempt_date': DateTime.now().toIso8601String(),
-        'total_points': 0
-      }).select();
-      _attemptId = attemptResponse[0]['id'];
-
-      final notesContent =
-          widget.topic.notes?.map((n) => n.content).join('\n\n') ?? '';
-      if (notesContent.trim().isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text(
-                    "There are no notes in this topic to create an assessment from.")),
-          );
-        }
+  Future<void> _loadAssessmentAndStartAttempt() async {
+    // This now correctly calls the method you added to TopicDatabase
+    final questions = await context
+        .read<TopicDatabase>()
+        .fetchQuestionsForAssessment(widget.assessmentId);
+    
+    final user = Supabase.instance.client.auth.currentUser;
+    if (!mounted || user == null || questions.isEmpty) {
+      if(mounted) {
         setState(() => _isLoading = false);
-        return;
       }
+      return;
+    }
+    
+    _profileId = user.id;
 
-      final generatedQuestions = await _assessmentService
-          .generateFlashcardQuestions(notesContent, widget.topic.id!);
+    final attemptResponse = await Supabase.instance.client.from('user_attempt').insert({
+      'profile_id': _profileId,
+      'assessment_id': widget.assessmentId,
+      'attempt_date': DateTime.now().toIso8601String(),
+    }).select('id').single();
 
+    if (mounted) {
       setState(() {
-        _questions = generatedQuestions;
+        _questions = questions;
+        _attemptId = attemptResponse['id'];
         _isLoading = false;
       });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text("Failed to generate assessment: $e")),
-        );
-      }
     }
   }
 
   void _handleAnswer(int? selectedIndex) {
-    if (selectedIndex == null) return;
-    final bool isCorrect =
-        _questions[_currentIndex].options[selectedIndex].isCorrect;
+    if (_answered || selectedIndex == null) return;
 
-    if (_attemptId != null) {
+    final isCorrect = _questions[_currentIndex].options[selectedIndex].isCorrect;
+
+    if (_attemptId != null && _questions[_currentIndex].id != null) {
       Supabase.instance.client.from('user_answer').insert({
         'attempt_id': _attemptId,
         'question_id': _questions[_currentIndex].id,
-        'answer_option_id': null,
-        'answer_text':
-            _questions[_currentIndex].options[selectedIndex].optionText,
+        'answer_text': _questions[_currentIndex].options[selectedIndex].optionText,
         'earned_points': isCorrect ? 1 : 0,
-      }).then((_) {}, onError: (e) {
-        debugPrint('Error saving user answer: $e');
-      });
+      }).onError((e, _) => debugPrint('Error saving user answer: $e'));
     }
 
     setState(() {
@@ -149,21 +104,16 @@ class _AssessmentPageState extends State<AssessmentPage> {
 
   void _handleDifficultyFeedback(fsrs.Rating rating) {
     final questionId = _questions[_currentIndex].id;
-    
     if (_profileId != null && questionId != null) {
       _fsrsService.updateCardReview(questionId, _profileId!, rating);
     }
   }
 
-  void _nextCard() async {
+  void _nextCard() {
     if (!mounted) return;
 
     if (_isCorrectAnswer && _selectedDifficultyIndex != null) {
-      final difficultyRatings = [
-        fsrs.Rating.hard,
-        fsrs.Rating.good,
-        fsrs.Rating.easy
-      ];
+      final difficultyRatings = [fsrs.Rating.hard, fsrs.Rating.good, fsrs.Rating.easy];
       _handleDifficultyFeedback(difficultyRatings[_selectedDifficultyIndex!]);
     }
 
@@ -187,23 +137,22 @@ class _AssessmentPageState extends State<AssessmentPage> {
           .from('user_attempt')
           .update({'total_points': _score}).eq('id', _attemptId!);
     }
-    if (_assessmentId != null) {
-      await Supabase.instance.client
-          .from('assessment')
-          .update({'status': 'completed'}).eq('id', _assessmentId!);
-    }
 
-    await Navigator.push<bool>(
+    if (!mounted) return;
+    await Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (context) => AssessmentResultsPage(
           score: _score,
           totalQuestions: _questions.length,
-          onFinish: () => Navigator.pop(context, false),
+          onFinish: () {
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+          },
         ),
       ),
     );
-    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -231,7 +180,7 @@ class _AssessmentPageState extends State<AssessmentPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('Could not load quiz. Please go back and try again.',
+            const Text('Could not load quiz questions. Please go back and try again.',
                 textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(
@@ -246,8 +195,7 @@ class _AssessmentPageState extends State<AssessmentPage> {
 
   Widget _buildQuizView(BuildContext context) {
     final currentQuestion = _questions[_currentIndex];
-    final progress =
-        (_questions.isEmpty) ? 0.0 : (_currentIndex + 1) / _questions.length;
+    final progress = (_questions.isEmpty) ? 0.0 : (_currentIndex + 1) / _questions.length;
 
     return Column(
       children: [
@@ -278,8 +226,7 @@ class _AssessmentPageState extends State<AssessmentPage> {
       child: Row(
         children: [
           IconButton(
-            icon:
-                Icon(Icons.close, color: Theme.of(context).colorScheme.onSurface),
+            icon: Icon(Icons.close, color: Theme.of(context).colorScheme.onSurface),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
@@ -289,10 +236,8 @@ class _AssessmentPageState extends State<AssessmentPage> {
               child: LinearProgressIndicator(
                 value: progress,
                 minHeight: 12,
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                valueColor: AlwaysStoppedAnimation<Color>(
-                    Theme.of(context).colorScheme.primary),
+                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
               ),
             ),
           ),
@@ -337,12 +282,12 @@ class _AssessmentPageState extends State<AssessmentPage> {
     final colorScheme = Theme.of(context).colorScheme;
     final List<String> difficulties = ["Hard", "Medium", "Easy"];
     final Map<int, Color> chipBackgroundColors = {
-      0: colorScheme.tertiaryContainer,
+      0: colorScheme.errorContainer,
       1: colorScheme.secondaryContainer,
       2: colorScheme.primaryContainer,
     };
     final Map<int, Color> chipTextColors = {
-      0: colorScheme.onTertiaryContainer,
+      0: colorScheme.onErrorContainer,
       1: colorScheme.onSecondaryContainer,
       2: colorScheme.onPrimaryContainer,
     };
@@ -352,8 +297,7 @@ class _AssessmentPageState extends State<AssessmentPage> {
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            Text('How well did you know this?',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text('How well did you know this?', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -382,9 +326,7 @@ class _AssessmentPageState extends State<AssessmentPage> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                         side: BorderSide(
-                          color: isSelected
-                              ? chipTextColors[index]!
-                              : Colors.transparent,
+                          color: isSelected ? chipTextColors[index]! : Colors.transparent,
                           width: 1.5,
                         ),
                       ),
@@ -418,12 +360,9 @@ class _AssessmentPageState extends State<AssessmentPage> {
               ?.copyWith(fontWeight: FontWeight.bold),
           backgroundColor: Theme.of(context).colorScheme.primary,
           foregroundColor: Theme.of(context).colorScheme.onPrimary,
-          disabledBackgroundColor:
-              Theme.of(context).colorScheme.primary.withAlpha(127),
-          disabledForegroundColor:
-              Theme.of(context).colorScheme.onPrimary.withAlpha(178),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          disabledBackgroundColor: Theme.of(context).colorScheme.primary.withAlpha(127),
+          disabledForegroundColor: Theme.of(context).colorScheme.onPrimary.withAlpha(178),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           minimumSize: const Size(double.infinity, 56),
         ),
       ),
