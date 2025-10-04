@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart'; // Import go_router
 import 'package:provider/provider.dart';
 import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -10,7 +11,6 @@ import 'package:rekindle/models/assessment.dart';
 import 'package:rekindle/services/fsrs_service.dart';
 import 'package:rekindle/theme/theme.dart';
 import 'package:rekindle/models/topic_database.dart';
-import 'assessment_results_page.dart';
 
 class AssessmentPage extends StatefulWidget {
   final String assessmentId;
@@ -22,51 +22,42 @@ class AssessmentPage extends StatefulWidget {
 
 class _AssessmentPageState extends State<AssessmentPage> {
   final FsrsService _fsrsService = FsrsService();
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   List<Question> _questions = [];
   bool _isLoading = true;
   int _currentIndex = 0;
+  // ✅ FIX: Use a map to store the user's selected answer for each question
+  final Map<String, AnswerOption> _userAnswers = {};
   int? _selectedOptionIndex;
   bool _answered = false;
-  int _score = 0;
   int? _selectedDifficultyIndex;
   bool _isDifficultyLocked = false;
   bool _isCorrectAnswer = false;
-  String? _attemptId;
   String? _profileId;
 
   @override
   void initState() {
     super.initState();
-    _loadAssessmentAndStartAttempt();
+    _loadAssessment();
   }
 
-  Future<void> _loadAssessmentAndStartAttempt() async {
-    // This now correctly calls the method you added to TopicDatabase
+  Future<void> _loadAssessment() async {
     final questions = await context
         .read<TopicDatabase>()
         .fetchQuestionsForAssessment(widget.assessmentId);
     
-    final user = Supabase.instance.client.auth.currentUser;
-    if (!mounted || user == null || questions.isEmpty) {
-      if(mounted) {
-        setState(() => _isLoading = false);
-      }
+    final user = _supabase.auth.currentUser;
+    if (!mounted || user == null) {
+      if(mounted) setState(() => _isLoading = false);
       return;
     }
     
     _profileId = user.id;
 
-    final attemptResponse = await Supabase.instance.client.from('user_attempt').insert({
-      'profile_id': _profileId,
-      'assessment_id': widget.assessmentId,
-      'attempt_date': DateTime.now().toIso8601String(),
-    }).select('id').single();
-
     if (mounted) {
       setState(() {
         _questions = questions;
-        _attemptId = attemptResponse['id'];
         _isLoading = false;
       });
     }
@@ -75,28 +66,22 @@ class _AssessmentPageState extends State<AssessmentPage> {
   void _handleAnswer(int? selectedIndex) {
     if (_answered || selectedIndex == null) return;
 
-    final isCorrect = _questions[_currentIndex].options[selectedIndex].isCorrect;
-
-    if (_attemptId != null && _questions[_currentIndex].id != null) {
-      Supabase.instance.client.from('user_answer').insert({
-        'attempt_id': _attemptId,
-        'question_id': _questions[_currentIndex].id,
-        'answer_text': _questions[_currentIndex].options[selectedIndex].optionText,
-        'earned_points': isCorrect ? 1 : 0,
-      }).onError((e, _) => debugPrint('Error saving user answer: $e'));
-    }
+    final currentQuestion = _questions[_currentIndex];
+    final selectedOption = currentQuestion.options[selectedIndex];
+    final isCorrect = selectedOption.isCorrect;
 
     setState(() {
       _answered = true;
       _selectedOptionIndex = selectedIndex;
       _isCorrectAnswer = isCorrect;
-      if (isCorrect) {
-        _score++;
-        _isDifficultyLocked = false;
-      } else {
-        _selectedDifficultyIndex = 0;
+      // Store the actual selected option object
+      _userAnswers[currentQuestion.id!] = selectedOption;
+
+      if (!isCorrect) {
+        _selectedDifficultyIndex = 0; // "Again"
         _isDifficultyLocked = true;
         _handleDifficultyFeedback(fsrs.Rating.again);
+        // Automatically move to the next card after a delay for wrong answers
         Timer(const Duration(milliseconds: 1200), _nextCard);
       }
     });
@@ -131,28 +116,59 @@ class _AssessmentPageState extends State<AssessmentPage> {
     }
   }
 
-  void _finishAssessment() async {
-    if (_attemptId != null) {
-      await Supabase.instance.client
-          .from('user_attempt')
-          .update({'total_points': _score}).eq('id', _attemptId!);
-    }
+  // ✅ FIX: This new function contains the logic to save the attempt and all answers
+  Future<void> _finishAssessment() async {
+    if (_profileId == null) return;
 
-    if (!mounted) return;
-    await Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AssessmentResultsPage(
-          score: _score,
-          totalQuestions: _questions.length,
-          onFinish: () {
-            if (Navigator.canPop(context)) {
-              Navigator.pop(context);
-            }
-          },
-        ),
-      ),
-    );
+    // 1. Calculate the final score
+    int finalScore = 0;
+    _userAnswers.forEach((questionId, selectedOption) {
+      if (selectedOption.isCorrect) {
+        finalScore++;
+      }
+    });
+
+    try {
+      // 2. Create the user_attempt record and get its ID
+      final attemptResponse = await _supabase.from('user_attempt').insert({
+        'assessment_id': widget.assessmentId,
+        'profile_id': _profileId,
+        'total_points': finalScore, // Use the calculated score
+      }).select('id').single();
+
+      final attemptId = attemptResponse['id'];
+
+      // 3. Prepare all user_answer records
+      final answersToInsert = _userAnswers.entries.map((entry) {
+        final questionId = entry.key;
+        final selectedOption = entry.value;
+        return {
+          'attempt_id': attemptId,
+          'question_id': questionId,
+          'answer_option_id': selectedOption.id, // Correctly use the option's ID
+          'earned_points': selectedOption.isCorrect ? 1 : 0,
+        };
+      }).toList();
+
+      // 4. Bulk insert all the answers
+      if (answersToInsert.isNotEmpty) {
+        await _supabase.from('user_answer').insert(answersToInsert);
+      }
+      
+      // 5. Navigate to the results page
+      if (mounted) {
+        context.go('/home/assessment/${widget.assessmentId}/results/$attemptId');
+      }
+
+    } catch (e) {
+      debugPrint('Error finishing assessment: $e');
+      // Optionally show a snackbar to the user
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save assessment results. Please try again.')),
+        );
+      }
+    }
   }
 
   @override

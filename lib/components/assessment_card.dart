@@ -1,7 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../models/assessment.dart';
+import 'package:rekindle/models/assessment.dart';
+import 'app_card.dart';
+
+String formatDuration(Duration duration) {
+  String twoDigits(int n) => n.toString().padLeft(2, '0');
+  String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
+  String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
+  return "${twoDigits(duration.inHours)}:${twoDigitMinutes}:$twoDigitSeconds";
+}
 
 class AssessmentCard extends StatefulWidget {
   final Assessment assessment;
@@ -11,110 +19,112 @@ class AssessmentCard extends StatefulWidget {
   State<AssessmentCard> createState() => _AssessmentCardState();
 }
 
-class _AssessmentCardState extends State<AssessmentCard> with SingleTickerProviderStateMixin {
-  late Timer _timer;
+class _AssessmentCardState extends State<AssessmentCard> {
+  Timer? _timer;
   Duration _timeUntilDue = Duration.zero;
-  late AnimationController _animationController;
-  late Animation<double> _animation;
+  bool _isOverdue = false;
 
   @override
   void initState() {
     super.initState();
-    _updateDuration();
-
+    _updateTimeUntilDue();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      _updateDuration();
+      _updateTimeUntilDue();
     });
-
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-
-    _animation = Tween<double>(begin: 1.0, end: 1.05).animate(
-      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
-    )..addStatusListener((status) {
-        if (status == AnimationStatus.completed) {
-          _animationController.reverse();
-        } else if (status == AnimationStatus.dismissed) {
-          Future.delayed(const Duration(seconds: 1), () {
-            if (mounted && _isDueOrPastDue()) {
-              _animationController.forward();
-            }
-          });
-        }
-      });
-
-    if (_isDueOrPastDue()) {
-      _animationController.forward();
-    }
-  }
-
-  void _updateDuration() {
-    // The dueDate is retrieved from the associated card_review record
-    final dueDate = widget.assessment.dueDate;
-    if (dueDate != null) {
-      setState(() {
-        _timeUntilDue = dueDate.difference(DateTime.now());
-      });
-    }
-  }
-
-  bool _isDueOrPastDue() {
-    return _timeUntilDue.isNegative;
   }
 
   @override
   void dispose() {
-    _timer.cancel();
-    _animationController.dispose();
+    _timer?.cancel();
     super.dispose();
+  }
+
+  void _updateTimeUntilDue() {
+    // Use the correct 'due' field from the assessment model.
+    if (widget.assessment.due != null) {
+      final now = DateTime.now();
+      
+      // Use the corrected variable here as well.
+      final dueDate = widget.assessment.due!.toLocal(); 
+      
+      final difference = dueDate.difference(now);
+
+      if (mounted) {
+        setState(() {
+          _timeUntilDue = difference.isNegative ? Duration.zero : difference;
+          _isOverdue = difference.isNegative && difference.abs() > const Duration(days: 1);
+        });
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    Color cardColor = Theme.of(context).cardColor;
-    Color textColor = Theme.of(context).colorScheme.inversePrimary;
-    String statusText = '';
+    // ✅ FIX: Card is interactable only if the status is correct AND the countdown is finished.
+    final bool isReady = _timeUntilDue == Duration.zero;
+    // The card is now interactable if it is brand new ('Pending'),
+    // or if it is ready for review ('Due', 'Overdue').
+    final bool isInteractable =
+        widget.assessment.status == 'Pending' ||
+        widget.assessment.status == 'Due' ||
+        widget.assessment.status == 'Overdue';
 
-    if (_isDueOrPastDue()) {
-      if (_timeUntilDue.abs() > const Duration(days: 1)) {
-        cardColor = Colors.red[800]!;
-        textColor = Colors.white;
-        statusText = '• Past Due';
-      } else {
-        cardColor = Colors.green[800]!;
-        textColor = Colors.white;
-        statusText = '• Due Now';
-      }
+    String statusText;
+    Color statusColor;
+    IconData statusIcon;
+
+    if (_isOverdue) {
+      statusText = 'Overdue';
+      statusColor = Colors.red;
+      statusIcon = Icons.warning_amber_rounded;
+    } else if (isReady) {
+      statusText = 'Ready to Review';
+      statusColor = Colors.green;
+      statusIcon = Icons.check_circle;
+    } else {
+      statusText = formatDuration(_timeUntilDue);
+      statusColor = Theme.of(context).colorScheme.onSurface;
+      statusIcon = Icons.timer_outlined;
     }
 
-    return GestureDetector(
-      onTap: () {
-        // Navigate to the assessment page to begin the quiz
-        context.go('/home/assessment/${widget.assessment.id}');
-      },
-      child: ScaleTransition(
-        scale: _animation,
-        child: Card(
-          color: cardColor,
-          margin: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
-          elevation: 4,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-            title: Text(
-              widget.assessment.title ?? 'Untitled Assessment', // Use the new title field
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            subtitle: Text(
-              'Topic: ${widget.assessment.topic.text} $statusText',
-              style: TextStyle(color: textColor.withOpacity(0.9)),
-            ),
-            trailing: Text(
-              _formatDuration(_timeUntilDue),
-              style: TextStyle(color: textColor, fontSize: 18, fontWeight: FontWeight.bold),
+    return Opacity(
+      opacity: isInteractable ? 1.0 : 0.6,
+      child: AppCard(
+        child: InkWell(
+          onTap: isInteractable
+              ? () => context.go('/home/assessment/${widget.assessment.id}')
+              : null,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.assessment.topic.text,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurface.withAlpha(153),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.assessment.title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _buildStat(context, Icons.question_answer_outlined, '${widget.assessment.questionCount} Questions'),
+                    _buildStat(context, statusIcon, statusText, color: statusColor),
+                  ],
+                )
+              ],
             ),
           ),
         ),
@@ -122,12 +132,20 @@ class _AssessmentCardState extends State<AssessmentCard> with SingleTickerProvid
     );
   }
 
-  String _formatDuration(Duration duration) {
-    if (duration.isNegative) return "00:00:00";
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = twoDigits(duration.inHours);
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return "$hours:$minutes:$seconds";
+  Widget _buildStat(BuildContext context, IconData icon, String text, {Color? color}) {
+    final defaultColor = Theme.of(context).colorScheme.onSurface;
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: color ?? defaultColor.withAlpha(204)),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: TextStyle(
+            color: color ?? defaultColor.withAlpha(204),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
   }
 }

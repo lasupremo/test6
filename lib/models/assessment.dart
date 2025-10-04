@@ -4,40 +4,45 @@ import 'package:rekindle/models/topic.dart';
 class Assessment {
   final String id;
   final String topicId;
-  final String? title; // The new AI-generated title
+  final String title;
   final DateTime createdAt;
-  final DateTime? dueDate; // The earliest due date from its associated cards
-  final Topic topic; // The associated Topic object
+  DateTime? due;
+  final Topic topic;
+  final int questionCount;
+  final String status; // ✅ FIX: Added the status property
 
   Assessment({
     required this.id,
     required this.topicId,
-    this.title,
+    required this.title,
     required this.createdAt,
-    this.dueDate,
+    this.due,
     required this.topic,
+    this.questionCount = 0,
+    required this.status, // ✅ FIX: Added to the constructor
   });
 
-  /// Creates an Assessment instance from a map, typically from a Supabase query.
-  /// This factory is designed to work with the 'get_assessments_with_due_dates' RPC call.
   factory Assessment.fromMap(Map<String, dynamic> map, Topic topic) {
+    final questions = map['question'] as List?;
+    final count = questions?.length ?? 0;
+
     return Assessment(
       id: map['id'],
       topicId: map['topic_id'],
-      title: map['title'],
+      title: map['title'] ?? 'Untitled Assessment',
       createdAt: DateTime.parse(map['created_at']),
-      // The 'due' field comes from the RPC function
-      dueDate: map['due'] != null ? DateTime.parse(map['due']) : null,
+      due: map['due'] != null ? DateTime.parse(map['due']) : null,
       topic: topic,
+      questionCount: count,
+      status: map['status'] ?? 'Pending', // ✅ FIX: Read status from the map
     );
   }
 }
 
-// Represents a single question within an assessment.
+// ... (Rest of the file remains the same)
 class Question {
   final String? id;
   final String questionText;
-  // Options are now fetched separately based on question_id
   final List<AnswerOption> options;
 
   Question({
@@ -46,15 +51,11 @@ class Question {
     required this.options,
   });
 
-  /// Creates a Question instance from the JSON object provided by the Gemini API.
   factory Question.fromJson(Map<String, dynamic> json) {
     var optionsList = (json['options'] as List)
         .map((optionJson) => AnswerOption.fromJson(optionJson))
         .toList();
-
-    // Shuffle the options so the correct answer isn't always in the same place
     optionsList.shuffle();
-
     return Question(
       questionText: json['question_text'],
       options: optionsList,
@@ -62,7 +63,6 @@ class Question {
   }
 }
 
-// Represents a single answer option for a question.
 class AnswerOption {
   final String? id;
   final String optionText;
@@ -74,7 +74,6 @@ class AnswerOption {
     required this.isCorrect,
   });
 
-  /// Creates an AnswerOption from the JSON object provided by the Gemini API.
   factory AnswerOption.fromJson(Map<String, dynamic> json) {
     return AnswerOption(
       optionText: json['text'],

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:rekindle/models/assessment.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -5,33 +6,79 @@ import 'topic.dart';
 
 class TopicDatabase extends ChangeNotifier {
   final SupabaseClient _supabase;
-  String? _profileId; // Cache the profile ID
+  String? _profileId;
+  final List<Topic> currentTopics = [];
+  
+  // This Timer will now be our reliable refresher.
+  Timer? _pollingTimer;
+
+  int _dueAssessmentsCount = 0;
+  int get dueAssessmentsCount => _dueAssessmentsCount;
 
   TopicDatabase()
       : _supabase = Supabase.instance.client,
-        _profileId = Supabase.instance.client.auth.currentUser?.id;
+        _profileId = Supabase.instance.client.auth.currentUser?.id {
+    // Start our new polling mechanism.
+    _startPolling();
+  }
 
   TopicDatabase.test(SupabaseClient mockClient, {String dummyUserId = "test-user"})
       : _supabase = mockClient,
         _profileId = dummyUserId;
 
-  final List<Topic> currentTopics = [];
+  // --- NEW POLLING MECHANISM ---
+  void _startPolling() {
+    // Immediately fetch the count when the app starts.
+    refreshDueAssessmentsCount();
+
+    // Then, create a timer that runs the refresh function every 15 seconds.
+    // This is efficient and ensures the UI is always up-to-date.
+    _pollingTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      refreshDueAssessmentsCount();
+    });
+  }
+
+  @override
+  void dispose() {
+    // It's crucial to cancel the timer when it's no longer needed.
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
 
   // Helper method to get and cache profile ID
   Future<String?> _getProfileId() async {
     if (_profileId != null) return _profileId;
-
     final userId = _supabase.auth.currentUser?.id;
     if (userId == null) {
       debugPrint('Error: User is not logged in.');
       return null;
     }
-
     _profileId = userId;
     return _profileId;
   }
 
-  // --- TOPIC OPERATIONS ---
+  // --- ASSESSMENT OPERATIONS ---
+  Future<void> refreshDueAssessmentsCount() async {
+    try {
+      final count = await _supabase.rpc('count_due_assessments');
+      // Only notify listeners if the count has actually changed.
+      // This prevents unnecessary UI rebuilds and improves performance.
+      if (count != _dueAssessmentsCount) {
+        _dueAssessmentsCount = count as int;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Error counting due assessments: $e');
+      if (_dueAssessmentsCount != 0) {
+        _dueAssessmentsCount = 0;
+        notifyListeners();
+      }
+    }
+  }
+
+  // --- ALL OTHER FUNCTIONS (addTopic, fetchTopics, etc.) REMAIN EXACTLY THE SAME ---
+  // ... (You can copy the rest of your functions from your existing file below this line)
+  // ...
   Future<void> addTopic(String textFromUser, {String? description}) async {
     final profileId = await _getProfileId();
     if (profileId == null) return;
@@ -172,23 +219,38 @@ class TopicDatabase extends ChangeNotifier {
     }
   }
 
-  // --- ASSESSMENT OPERATIONS ---
-
-  /// **Fetches assessments and joins them with their topic and earliest due date.**
-  /// This uses the `get_assessments_with_due_dates` PostgreSQL function in Supabase.
   Future<List<Assessment>> fetchAssessmentsWithDueDates() async {
     final profileId = await _getProfileId();
     if (profileId == null) return [];
 
     try {
-      final assessmentsData = await _supabase.rpc('get_assessments_with_due_dates');
-      final List<Assessment> assessments = [];
+      // ✅ FIX: This query now fetches the actual IDs of the questions.
+      // The !inner join ensures we only get assessments that have questions.
+      final assessmentsData = await _supabase
+          .from('assessment')
+          .select('*, topic:topics(*), question!inner(id)')
+          .eq('profile_id', profileId);
 
+      final List<Assessment> assessments = [];
       for (var item in assessmentsData) {
-        final topic = await fetchTopicById(item['topic_id']);
-        if (topic != null) {
-          assessments.add(Assessment.fromMap(item, topic));
+        // Now, this part of the code will have a valid list of question IDs to work with.
+        final questionIds = (item['question'] as List).map((q) => q['id'] as String).toList();
+
+        if (questionIds.isNotEmpty) {
+          final reviewResponse = await _supabase
+              .from('card_reviews')
+              .select('due')
+              .inFilter('question_id', questionIds)
+              .order('due', ascending: true)
+              .limit(1);
+
+          if (reviewResponse.isNotEmpty) {
+            item['due'] = reviewResponse.first['due'];
+          }
         }
+
+        final topic = Topic.fromJson(item['topic']);
+        assessments.add(Assessment.fromMap(item, topic));
       }
       return assessments;
     } catch (e) {
@@ -197,24 +259,13 @@ class TopicDatabase extends ChangeNotifier {
     }
   }
 
-  /// **Counts how many assessments are currently due.**
-  /// Used for the summary card on the home page.
-  Future<int> countDueAssessments() async {
-    final profileId = await _getProfileId();
-    if (profileId == null) return 0;
-    
-    try {
-      final response = await _supabase
-          .rpc('get_assessments_with_due_dates')
-          .lte('due', DateTime.now().toIso8601String());
 
-      return response.length;
-    } catch (e) {
-      debugPrint('Error counting due assessments: $e');
-      return 0;
-    }
+  Future<int> countDueAssessments() async {
+    await refreshDueAssessmentsCount();
+    return _dueAssessmentsCount;
   }
 
+  // ... (rest of the class remains the same)
   /// **Handles the entire process of generating a new assessment for a note.**
   Future<void> generateAssessmentForNote({
     required String noteId,
@@ -226,13 +277,12 @@ class TopicDatabase extends ChangeNotifier {
     if (profileId == null) return;
 
     try {
-      // **Step 1: Archive old questions related to this note.**
+      // ... (Step 1 and 2 remain the same)
       await _supabase
           .from('question')
           .update({'is_archived': true})
           .eq('note_id', noteId);
 
-      // **Step 2: Create a new assessment record.**
       final assessmentResponse = await _supabase.from('assessment').insert({
         'topic_id': topicId,
         'profile_id': profileId,
@@ -241,35 +291,35 @@ class TopicDatabase extends ChangeNotifier {
 
       final assessmentId = assessmentResponse['id'];
 
-      // **Step 3: Prepare and insert the new questions and their answer options.**
       for (final questionModel in questions) {
-        // Insert the question and get its new ID
+        // ✅ FIX: Added profile_id to the question insert map
         final questionResponse = await _supabase.from('question').insert({
           'assessment_id': assessmentId,
           'note_id': noteId,
           'question_text': questionModel.questionText,
-          'question_type': 'multiple_choice', // default type
+          'question_type': 'multiple_choice',
           'is_archived': false,
+          'profile_id': profileId,
+          'topic_id': topicId,
         }).select('id').single();
 
         final questionId = questionResponse['id'];
 
-        // Prepare all answer options for this question
+
+
         final optionsToInsert = questionModel.options.map((option) => {
           'question_id': questionId,
           'option_text': option.optionText,
           'is_correct': option.isCorrect,
         }).toList();
 
-        // Bulk insert the answer options
         await _supabase.from('answer_option').insert(optionsToInsert);
       }
 
-      // Optionally, you might want to trigger the initial FSRS card review creation here.
-      
+      await refreshDueAssessmentsCount();
+
     } catch (e) {
       debugPrint('Error generating assessment for note: $e');
-      // Optionally re-throw or handle the error in the UI
       rethrow;
     }
   }
@@ -293,7 +343,7 @@ class TopicDatabase extends ChangeNotifier {
             isCorrect: opt['is_correct'],
           );
         }).toList();
-        
+
         options.shuffle(); // Shuffle options for display
 
         questions.add(Question(
@@ -321,7 +371,7 @@ class TopicDatabase extends ChangeNotifier {
           .eq('topic_id', topicId)
           .eq('profile_id', profileId)
           .order('created_at', ascending: false);
-      
+
       // We need the topic object for the Assessment model, but we already have it
       final topic = await fetchTopicById(topicId);
       if (topic == null) return [];
@@ -332,5 +382,4 @@ class TopicDatabase extends ChangeNotifier {
       return [];
     }
   }
-
 }

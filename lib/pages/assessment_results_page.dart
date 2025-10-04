@@ -1,121 +1,190 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:provider/provider.dart';
+import 'package:rekindle/models/topic_database.dart';
 
-class AssessmentResultsPage extends StatelessWidget {
-  final int score;
-  final int totalQuestions;
-  final VoidCallback onFinish;
-  final DateTime? averageNextReviewDate;
-  final DateTime? earliestReviewDate;
-  final DateTime? latestReviewDate;
+class AssessmentResultsPage extends StatefulWidget {
+  final String attemptId;
 
   const AssessmentResultsPage({
     super.key,
-    required this.score,
-    required this.totalQuestions,
-    required this.onFinish,
-    this.averageNextReviewDate,
-    this.earliestReviewDate,
-    this.latestReviewDate,
+    required this.attemptId,
   });
 
   @override
-  Widget build(BuildContext context) {
-    double percentage = totalQuestions > 0 ? (score / totalQuestions) * 100 : 0;
+  State<AssessmentResultsPage> createState() => _AssessmentResultsPageState();
+}
 
+class _AssessmentResultsPageState extends State<AssessmentResultsPage> {
+  Future<Map<String, dynamic>?>? _resultsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _resultsFuture = _fetchAttemptResults();
+  }
+
+  Future<Map<String, dynamic>?> _fetchAttemptResults() async {
+    try {
+      final attemptData = await Supabase.instance.client
+          .from('user_attempt')
+          .select('*, assessment:assessment_id(*, question(*))')
+          .eq('id', widget.attemptId)
+          .single();
+
+      final score = attemptData['total_points'] ?? 0;
+      final assessment = attemptData['assessment'];
+      if (assessment == null) return null;
+
+      final questions = assessment['question'] as List;
+      final totalQuestions = questions.length;
+      final questionIds = questions.map((q) => q['id'] as String).toList();
+
+      DateTime? earliestReviewDate;
+      if (questionIds.isNotEmpty) {
+        final reviewData = await Supabase.instance.client
+            .from('card_reviews')
+            .select('due')
+            // ✅ FIX: The correct method name is 'in' not 'in_'.
+            .inFilter('question_id', questionIds)
+            .order('due', ascending: true)
+            .limit(1);
+
+        if (reviewData.isNotEmpty) {
+          earliestReviewDate = DateTime.parse(reviewData.first['due']).toLocal();
+        }
+      }
+
+      return {
+        'score': score,
+        'totalQuestions': totalQuestions,
+        'earliestReviewDate': earliestReviewDate,
+      };
+    } catch (e) {
+      debugPrint('Error fetching assessment results: $e');
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Quiz Complete!',
-                style: GoogleFonts.inter(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.inversePrimary,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Your Score',
-                style: TextStyle(
-                  fontSize: 18,
-                  color: Theme.of(context).colorScheme.secondary,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '$score / $totalQuestions',
-                style: GoogleFonts.inter(
-                  fontSize: 48,
-                  fontWeight: FontWeight.w800,
-                  color: Theme.of(context).colorScheme.inversePrimary,
-                ),
-              ),
-              Text(
-                '${percentage.toStringAsFixed(1)}%',
-                style: GoogleFonts.inter(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.green,
-                ),
-              ),
-              
-              // FSRS Review Information Section
-              if (earliestReviewDate != null) ...[
-                const SizedBox(height: 40),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceVariant,
-                    borderRadius: BorderRadius.circular(12),
+      body: FutureBuilder<Map<String, dynamic>?>(
+        future: _resultsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
+            return const Center(child: Text('Could not load assessment results.'));
+          }
+
+          final results = snapshot.data!;
+          final score = results['score'] as int;
+          final totalQuestions = results['totalQuestions'] as int;
+          final earliestReviewDate = results['earliestReviewDate'] as DateTime?;
+          final double percentage = totalQuestions > 0 ? (score / totalQuestions) * 100 : 0;
+
+          return Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Quiz Complete!',
+                    style: GoogleFonts.inter(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.inversePrimary,
+                    ),
                   ),
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.schedule,
-                        size: 32,
-                        color: Theme.of(context).colorScheme.primary,
+                  const SizedBox(height: 20),
+                  Text(
+                    'Your Score',
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: Theme.of(context).colorScheme.secondary,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '$score / $totalQuestions',
+                    style: GoogleFonts.inter(
+                      fontSize: 48,
+                      fontWeight: FontWeight.w800,
+                      color: Theme.of(context).colorScheme.inversePrimary,
+                    ),
+                  ),
+                  Text(
+                    '${percentage.toStringAsFixed(1)}%',
+                    style: GoogleFonts.inter(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.green,
+                    ),
+                  ),
+                  
+                  if (earliestReviewDate != null) ...[
+                    const SizedBox(height: 40),
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceVariant,
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Next Review',
-                        style: GoogleFonts.inter(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            Icons.schedule,
+                            size: 32,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Next Review',
+                            style: GoogleFonts.inter(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _buildReviewInfo(
+                            context,
+                            'Study this topic again',
+                            earliestReviewDate,
+                            Icons.school_outlined,
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 16),
+                    ),
+                  ],
+                  
+                  const SizedBox(height: 40),
+                  TextButton(
+                    onPressed: () {
+                      // This correctly tells the app to get the new count.
+                      context.read<TopicDatabase>().refreshDueAssessmentsCount();
                       
-                      // Next Review Date (when you should start studying again)
-                      _buildReviewInfo(
-                        context,
-                        'Study this topic again',
-                        earliestReviewDate!,
-                        Icons.school_outlined,
-                      ),
-                    ],
+                      // Navigate back to the main home page so the user sees the updated counter.
+                      context.go('/home');
+                    },
+                    child: Text(
+                      'Finish',
+                      style: TextStyle(color: Theme.of(context).colorScheme.inversePrimary),
+                    ),
                   ),
-                ),
-              ],
-              
-              const SizedBox(height: 40),
-              TextButton(
-                onPressed: onFinish,
-                child: Text(
-                  'Finish',
-                  style: TextStyle(color: Theme.of(context).colorScheme.inversePrimary),
-                ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -133,14 +202,14 @@ class AssessmentResultsPage extends StatelessWidget {
     final timeFormat = DateFormat('HH:mm');
 
     String timeUntil;
-    if (difference.inDays > 0) {
-      timeUntil = '${difference.inDays} days';
-    } else if (difference.inHours > 0) {
-      timeUntil = '${difference.inHours} hours';
-    } else if (difference.inMinutes > 0) {
-      timeUntil = '${difference.inMinutes} minutes';
-    } else {
+    if (difference.isNegative) {
       timeUntil = 'Now';
+    } else if (difference.inDays > 0) {
+      timeUntil = 'in ${difference.inDays} days';
+    } else if (difference.inHours > 0) {
+      timeUntil = 'in ${difference.inHours} hours';
+    } else {
+      timeUntil = 'in ${difference.inMinutes} minutes';
     }
 
     if (isCompact) {

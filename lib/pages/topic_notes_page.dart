@@ -4,7 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../components/note_tile.dart';
-import '../models/assessment.dart'; // Import Assessment model
+import '../models/assessment.dart';
 import '../models/topic.dart';
 import '../models/topic_database.dart';
 import 'note_editor_page.dart';
@@ -18,13 +18,12 @@ class TopicNotesPage extends StatefulWidget {
 }
 
 class _TopicNotesPageState extends State<TopicNotesPage> {
-  // NEW: Method to show the list of assessments for this topic
   void _showAssessmentsDialog(BuildContext context) {
     showDialog(
       context: context,
       builder: (context) {
         return FutureBuilder<List<Assessment>>(
-          // You need to add this method to your TopicDatabase
+          // ✅ FIX: Added a null check (!) because topic.id is required here.
           future: context
               .read<TopicDatabase>()
               .fetchAssessmentsForTopic(widget.topic.id!),
@@ -56,12 +55,10 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
                   itemBuilder: (context, index) {
                     final assessment = assessments[index];
                     return ListTile(
-                      title: Text(assessment.title ?? 'Untitled Assessment'),
+                      title: Text(assessment.title),
                       subtitle: Text('Created on: ${assessment.createdAt.toLocal().toString().substring(0, 10)}'),
                       onTap: () {
-                        // Pop the dialog first
                         Navigator.pop(context);
-                        // Then navigate to the assessment page
                         context.go('/home/assessment/${assessment.id}');
                       },
                     );
@@ -81,6 +78,36 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
     );
   }
 
+  void _deleteNote(Note note) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Note'),
+        content: Text('Are you sure you want to delete "${note.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      // ✅ FIX: Added a null check (!) on note.id.
+      await context.read<TopicDatabase>().deleteNote(note.id!);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted "${note.title}"')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -93,7 +120,6 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
           ),
         ),
         actions: [
-          // This is the new button to view the list of assessments
           IconButton(
             icon: const Icon(Icons.quiz_outlined),
             tooltip: 'View Assessments',
@@ -107,6 +133,7 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
             context,
             MaterialPageRoute(
               builder: (context) => NoteEditorPage(
+                // ✅ FIX: Added null checks (!) as these are required.
                 topicId: widget.topic.id!,
                 topicTitle: widget.topic.text,
               ),
@@ -119,6 +146,7 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
         builder: (context, topicDatabase, child) {
           final currentTopic = topicDatabase.currentTopics
               .firstWhere((t) => t.id == widget.topic.id);
+          // ✅ FIX: Provide a default empty list if notes is null.
           final notes = currentTopic.notes ?? [];
 
           if (notes.isEmpty) {
@@ -131,10 +159,27 @@ class _TopicNotesPageState extends State<TopicNotesPage> {
           }
 
           return ListView.builder(
+            padding: const EdgeInsets.all(16),
             itemCount: notes.length,
             itemBuilder: (context, index) {
               final note = notes[index];
-              return NoteTile(note: note, topic: currentTopic);
+              return NoteTile(
+                note: note,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => NoteEditorPage(
+                        // ✅ FIX: Added null checks (!) as these are required.
+                        topicId: widget.topic.id!,
+                        topicTitle: widget.topic.text,
+                        note: note,
+                      ),
+                    ),
+                  );
+                },
+                onDelete: () => _deleteNote(note),
+              );
             },
           );
         },

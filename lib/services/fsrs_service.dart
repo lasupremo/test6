@@ -47,6 +47,7 @@ class FsrsService {
           .from('card_reviews')
           .update(newReview.toJson())
           .eq('id', existingReview.id!)
+          .eq('profile_id', profileId) 
           .select();
       cardReviewId = updatedRows[0]['id'];
     } else {
@@ -56,7 +57,8 @@ class FsrsService {
     }
 
     final log = ReviewLog(
-      cardId: cardReviewId,
+      // ✅ FIX: Use 'cardId' to match the ReviewLog model, which maps to 'card_id' in toJson.
+      cardId: cardReviewId, 
       profileId: profileId,
       rating: rating,
       reviewTime: DateTime.now(),
@@ -67,7 +69,8 @@ class FsrsService {
       previousState: previousState,
       newState: newReview.state,
     );
-
+    
+    // ✅ FIX: Corrected the table name from 'review_log' to 'review_logs'.
     await _supabase.from('review_logs').insert(log.toJson());
   }
 
@@ -82,23 +85,15 @@ class FsrsService {
         .map((json) => CardReview.fromJson(json))
         .toList();
   }
-
-  /// **Calculates the probability of recalling a card (retention score).**
-  ///
-  /// [lastReview]: The timestamp of the last time the user reviewed this card.
-  /// [stability]: The memory stability value ('S') from the FSRS algorithm for the card.
-  /// Returns a double between 0.0 (0%) and 1.0 (100%).
+  
   double calculateRetrievability(DateTime lastReview, double stability) {
-    // Calculate the time elapsed in days (can be a fraction).
     final double elapsedDays =
         DateTime.now().difference(lastReview).inMilliseconds / (1000 * 60 * 60 * 24);
 
-    // Guard against edge cases like future dates or zero stability.
     if (elapsedDays < 0 || stability <= 0) {
       return 1.0;
     }
 
-    // The core FSRS formula for Retrievability: R = e^(-t/S)
     return exp(-elapsedDays / stability);
   }
 }

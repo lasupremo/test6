@@ -20,39 +20,30 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    // Fetch topics and notes when the page loads
+    // Fetch initial data when the page loads
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<TopicDatabase>().fetchTopics();
+      context.read<TopicDatabase>().refreshDueAssessmentsCount();
     });
   }
 
-  // Get all notes from all topics, sorted by updated_at (most recent first)
   List<Map<String, dynamic>> _getRecentNotes(List<Topic> topics) {
     List<Map<String, dynamic>> allNotes = [];
-    
     for (Topic topic in topics) {
       if (topic.notes != null) {
         for (Note note in topic.notes!) {
-          allNotes.add({
-            'note': note,
-            'topic': topic,
-          });
+          allNotes.add({'note': note, 'topic': topic});
         }
       }
     }
-    
-    // Sort by updated_at (most recent first), fallback to created_at
     allNotes.sort((a, b) {
       DateTime? aTime = a['note'].updatedAt ?? a['note'].createdAt;
       DateTime? bTime = b['note'].updatedAt ?? b['note'].createdAt;
-      
       if (aTime == null && bTime == null) return 0;
       if (aTime == null) return 1;
       if (bTime == null) return -1;
-      
-      return bTime.compareTo(aTime); // Most recent first
+      return bTime.compareTo(aTime);
     });
-    
     return allNotes;
   }
 
@@ -77,13 +68,9 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+  
   Widget _buildDueCounter(BuildContext context, int dueCount) {
-    // Calculate the progress ring value (e.g., 25% for 4 items, capped at 100%)
-    // You can adjust the logic here based on what you want to represent.
-    // For this example, let's say a "full" ring is 10+ due items.
     final double progressValue = (dueCount / 10).clamp(0.0, 1.0);
-
     return Stack(
       alignment: Alignment.center,
       children: [
@@ -94,9 +81,7 @@ class _HomePageState extends State<HomePage> {
             value: progressValue,
             strokeWidth: 8,
             backgroundColor: const Color(0xFFFAB906),
-            valueColor: const AlwaysStoppedAnimation<Color>(
-              Color(0xFFE56316),
-            ),
+            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE56316)),
           ),
         ),
         Column(
@@ -137,25 +122,16 @@ class _HomePageState extends State<HomePage> {
           padding: const EdgeInsets.all(8.0),
           child: CircleAvatar(
             backgroundColor: Colors.grey[300],
-            child: Icon(
-              Icons.person,
-              color: Colors.grey[600],
-            ),
+            child: Icon(Icons.person, color: Colors.grey[600]),
           ),
         ),
         actions: [
           IconButton(
-            icon: Icon(
-              Icons.notifications_outlined,
-              color: Theme.of(context).colorScheme.inversePrimary,
-            ),
+            icon: Icon(Icons.notifications_outlined, color: Theme.of(context).colorScheme.inversePrimary),
             onPressed: () {},
           ),
           IconButton(
-            icon: Icon(
-              Icons.logout,
-              color: Theme.of(context).colorScheme.inversePrimary,
-            ),
+            icon: Icon(Icons.logout, color: Theme.of(context).colorScheme.inversePrimary),
             onPressed: () async {
               await Supabase.instance.client.auth.signOut();
               context.go('/login');
@@ -166,13 +142,14 @@ class _HomePageState extends State<HomePage> {
       body: Consumer<TopicDatabase>(
         builder: (context, topicDatabase, child) {
           final recentNotes = _getRecentNotes(topicDatabase.currentTopics);
+          // ✅ FIX: Get the live dueCount from the provider's state.
+          final dueCount = topicDatabase.dueAssessmentsCount;
           
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -186,34 +163,23 @@ class _HomePageState extends State<HomePage> {
                     ),
                     Text(
                       'Hi, ${user?.email?.split('@')[0] ?? 'Guest'}',
-                      style: GoogleFonts.inter(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w400,
-                        color: Color(0xFF808080),
-                      ),
+                      style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w400, color: const Color(0xFF808080)),
                     ),
                   ],
                 ),
                 const SizedBox(height: 24),
-
-                // Stats Row
                 Row(
                   children: [
-                    // Due assessments card
                     Expanded(
-                      child: GestureDetector( // 1. Wraps the card to make it tappable
-                        onTap: () => context.go('/home/due-assessments'), // 2. Navigates on tap
+                      child: GestureDetector(
+                        onTap: () => context.go('/home/due-assessments'),
                         child: Container(
                           padding: const EdgeInsets.all(20),
                           decoration: BoxDecoration(
                             color: Theme.of(context).colorScheme.primary,
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.05),
-                                blurRadius: 10,
-                                offset: const Offset(0, 4),
-                              ),
+                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Column(
@@ -229,25 +195,8 @@ class _HomePageState extends State<HomePage> {
                               ),
                               const SizedBox(height: 16),
                               Center(
-                                // 3. FutureBuilder to fetch and display the due count dynamically
-                                child: FutureBuilder<int>(
-                                  future: context.read<TopicDatabase>().countDueAssessments(),
-                                  builder: (context, snapshot) {
-                                    if (snapshot.connectionState == ConnectionState.waiting) {
-                                      return const SizedBox(
-                                        width: 80,
-                                        height: 80,
-                                        child: Center(child: CircularProgressIndicator(strokeWidth: 8)),
-                                      );
-                                    }
-                                    if (snapshot.hasError || !snapshot.hasData) {
-                                      // Display 0 or an error icon if fetching fails
-                                      return _buildDueCounter(context, 0);
-                                    }
-                                    // Display the fetched count
-                                    return _buildDueCounter(context, snapshot.data!);
-                                  },
-                                ),
+                                // ✅ FIX: Replaced the old FutureBuilder with the live data.
+                                child: _buildDueCounter(context, dueCount),
                               ),
                             ],
                           ),
@@ -255,30 +204,22 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(width: 16),
-
-                    // Streak card
+                    
                     Expanded(
                       child: Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
                           color: Theme.of(context).colorScheme.primary,
                           borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
                               children: [
-                                Icon(
+                                const Icon(
                                   Icons.local_fire_department,
-                                  color: const Color(0xFFFF6B35),
+                                  color: Color(0xFFFF6B35),
                                   size: 16,
                                 ),
                                 const SizedBox(width: 4),
@@ -302,7 +243,6 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                             const SizedBox(height: 8),
-                            // Simple bar chart
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                               crossAxisAlignment: CrossAxisAlignment.end,
@@ -321,24 +261,14 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
                 const SizedBox(height: 16),
-
-                // Bottom Row
                 Row(
                   children: [
-                    // Retention score card
                     Expanded(
                       child: Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
                           color: Theme.of(context).colorScheme.primary,
                           borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -390,8 +320,6 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(width: 16),
-
-                    // Manage topics card
                     GestureDetector(
                       onTap: () {
                         context.go('/home/topics');
@@ -403,17 +331,10 @@ class _HomePageState extends State<HomePage> {
                         decoration: BoxDecoration(
                           color: const Color(0xFFFFB000),
                           borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFFFFB000).withOpacity(0.3),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
                         ),
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
+                          children: const [
                             Text(
                               'Manage your topics',
                               textAlign: TextAlign.center,
@@ -429,21 +350,17 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 24),
-
-                // Jump back in your notes section - Only show if there are notes
                 if (recentNotes.isNotEmpty) ...[
-                  Text(
+                  const SizedBox(height: 24),
+                  const Text(
                     'Jump back in your notes',
-                    style: GoogleFonts.inter(
+                    style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
-                      color: const Color(0xFF6D6767),
+                      color: Color(0xFF6D6767),
                     ),
                   ),
                   const SizedBox(height: 18),
-
-                  // Notes grid - Shows only existing notes
                   Row(
                     children: [
                       for (int i = 0; i < recentNotes.length && i < 3; i++)
@@ -471,13 +388,6 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           color: Theme.of(context).colorScheme.primary,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
-            ),
-          ],
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -511,7 +421,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
+  
   Widget _buildNoteCard(Note note, Topic topic) {
     return GestureDetector(
       onTap: () => _navigateToNote(note, topic),
@@ -522,7 +432,6 @@ class _HomePageState extends State<HomePage> {
         ),
         child: Column(
           children: [
-            // Top section - Topic name
             GestureDetector(
               onTap: () => _navigateToTopic(topic),
               child: Container(
@@ -551,14 +460,13 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-            // Bottom section - Note preview
             Container(
               height: 160,
               width: double.infinity,
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: Color(0xFFF9E0B9),
-                borderRadius: const BorderRadius.only(
+                borderRadius: BorderRadius.only(
                   bottomLeft: Radius.circular(12),
                   bottomRight: Radius.circular(12),
                 ),
@@ -566,7 +474,6 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Note title
                   Text(
                     note.title,
                     style: GoogleFonts.inter(
@@ -578,7 +485,6 @@ class _HomePageState extends State<HomePage> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 8),
-                  // Note content preview
                   Expanded(
                     child: Text(
                       _getPlainTextContent(note.content),
@@ -593,7 +499,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  // Last updated date - Using the utility function
                   Text(
                     DateFormatter.formatTimeAgo(note.updatedAt ?? note.createdAt),
                     style: TextStyle(
@@ -622,7 +527,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Helper function to extract plain text from note content (removes any formatting)
   String _getPlainTextContent(String content) {
     return content.replaceAll(RegExp(r'<[^>]*>'), '').trim();
   }

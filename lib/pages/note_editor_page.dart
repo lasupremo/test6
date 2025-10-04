@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -45,15 +46,17 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
     final initialContent = widget.note?.content ?? '';
     try {
-      // FIX: Correctly initialize QuillController from plain text
       _contentController = QuillController(
         document: initialContent.isNotEmpty
-            ? Document.fromDelta(Delta()..insert(initialContent))
+            ? Document.fromJson(jsonDecode(initialContent))
             : Document(),
         selection: const TextSelection.collapsed(offset: 0),
       );
     } catch (_) {
-      _contentController = QuillController.basic();
+      _contentController = QuillController(
+        document: Document()..insert(0, initialContent),
+        selection: const TextSelection.collapsed(offset: 0),
+      );
     }
 
     _titleController.addListener(_onTitleChanged);
@@ -87,8 +90,9 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   Future<void> _generateAssessment() async {
+    final messenger = ScaffoldMessenger.of(context);
     if (widget.note?.id == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('Please save the note before generating an assessment.'),
           backgroundColor: Colors.orange,
@@ -103,14 +107,14 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     });
 
     final noteContent = _contentController.document.toPlainText();
-    final localContext = context; // FIX: Capture context before async gap
+    final localContext = context;
 
     final aiResponse = await _geminiService.generateQuestionsFromNote(
       noteContent: noteContent,
       context: localContext,
     );
 
-    if (!mounted) return; // FIX: Guard against async gaps
+    if (!mounted) return;
 
     if (aiResponse.containsKey('error')) {
       setState(() {
@@ -127,29 +131,29 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
     try {
       await context.read<TopicDatabase>().generateAssessmentForNote(
-        noteId: widget.note!.id!,
-        topicId: widget.topicId,
-        assessmentTitle: assessmentTitle,
-        questions: questions,
-      );
+            noteId: widget.note!.id!,
+            topicId: widget.topicId,
+            assessmentTitle: assessmentTitle,
+            questions: questions,
+          );
 
-      if (!mounted) return; // FIX: Guard against async gaps
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!mounted) return;
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('New assessment generated successfully!'),
           backgroundColor: Colors.green,
         ),
       );
     } catch (e) {
-      if (!mounted) return; // FIX: Guard against async gaps
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!mounted) return;
+      messenger.showSnackBar(
         SnackBar(
           content: Text('Failed to save the assessment: $e'),
           backgroundColor: Colors.red,
         ),
       );
     } finally {
-      if(mounted) {
+      if (mounted) {
         setState(() {
           _isGeneratingAssessment = false;
         });
@@ -162,7 +166,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     final topicDatabase = context.read<TopicDatabase>();
     final currentTopic = topicDatabase.currentTopics
         .firstWhere((topic) => topic.id == widget.topicId, orElse: () => Topic(id: '', text: '', profileId: ''));
-    
+
     final notes = currentTopic.notes ?? [];
     return notes.any((note) =>
         note.title.toLowerCase() == title.toLowerCase() &&
@@ -196,24 +200,24 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   Future<void> _saveNote() async {
     if (_isSaving) return;
     setState(() => _isSaving = true);
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
 
     try {
       final userTitle = _titleController.text.trim();
-      final content = _contentController.document.toPlainText().trim();
+      final content = jsonEncode(_contentController.document.toDelta().toJson());
       String finalTitle;
 
       if (userTitle.isEmpty) {
         finalTitle = _generateUniqueUntitledTitle(excludeNoteId: widget.note?.id);
       } else if (_isDuplicateNoteTitle(userTitle, excludeNoteId: widget.note?.id)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("A note with this title already exists. Please choose a different title."),
-              backgroundColor: Colors.red,
-            ),
-          );
-          setState(() => _isSaving = false);
-        }
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text("A note with this title already exists. Please choose a different title."),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _isSaving = false);
         return;
       } else {
         finalTitle = userTitle;
@@ -227,26 +231,26 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         await topicDatabase.updateNote(widget.note!.id!, finalTitle, content);
       }
 
-      if (mounted) {
-        setState(() {
-          _hasUnsavedChanges = false;
-          _isSaving = false;
-        });
-        Navigator.pop(context);
-      }
+      if (!mounted) return;
+
+      setState(() {
+        _hasUnsavedChanges = false;
+        _isSaving = false;
+      });
+      navigator.pop();
     } catch (e) {
-      if (mounted) {
-        setState(() => _isSaving = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving note: $e')),
-        );
-      }
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Error saving note: $e')),
+      );
     }
   }
 
   Future<bool> _onWillPop() async {
     if (!_hasUnsavedChanges) return true;
 
+    final messenger = ScaffoldMessenger.of(context);
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -267,14 +271,12 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       case 'save':
         final userTitle = _titleController.text.trim();
         if (userTitle.isNotEmpty && _isDuplicateNoteTitle(userTitle, excludeNoteId: widget.note?.id)) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
+            messenger.showSnackBar(
               const SnackBar(
                 content: Text("Cannot save: A note with this title already exists."),
                 backgroundColor: Colors.red,
               ),
             );
-          }
           return false;
         }
         await _saveNote();
@@ -304,7 +306,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         final shouldPop = await _onWillPop();
         if (shouldPop && mounted) {
@@ -394,17 +396,17 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
             ),
             Divider(
               color: _titleError != null
-                  ? Colors.red.withOpacity(0.3)
-                  : Theme.of(context).colorScheme.secondary.withOpacity(0.2),
+                  ? Colors.red.withAlpha((255 * 0.3).round())
+                  : Theme.of(context).colorScheme.secondary.withAlpha((255 * 0.2).round()),
               indent: 20,
               endIndent: 20,
             ),
             Expanded(
               child: Column(
                 children: [
-                  QuillToolbar.simple(
-                    configurations: QuillSimpleToolbarConfigurations(
-                      controller: _contentController,
+                  QuillSimpleToolbar(
+                    controller: _contentController,
+                    config: const QuillSimpleToolbarConfig(
                       showAlignmentButtons: true,
                     ),
                   ),
@@ -412,14 +414,15 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
                     child: Container(
                       padding: const EdgeInsets.all(20),
                       child: QuillEditor.basic(
-                        configurations: QuillEditorConfigurations(
-                          controller: _contentController,
+                        controller: _contentController,
+                        focusNode: _contentFocusNode,
+                        // ✅ FIX: Removed `readOnly` parameter as it defaults to false
+                        config: const QuillEditorConfig(
                           padding: EdgeInsets.zero,
                           autoFocus: false,
                           expands: true,
                           placeholder: 'Start writing...',
                         ),
-                        focusNode: _contentFocusNode,
                       ),
                     ),
                   ),
